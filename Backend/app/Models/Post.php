@@ -13,6 +13,7 @@ class Post extends Model
         'autor',
         'categoria',
         'publicacao',
+        'imagem_id',
     ];
 
     protected $casts = [
@@ -20,8 +21,8 @@ class Post extends Model
         'updated_at' => 'datetime',
     ];
 
-    public function imagens()
+    public function imagem()
     {
-        return $this->hasMany(Imagem::class);
+        return $this->belongsTo(Imagem::class, 'imagem_id');
     }
 }

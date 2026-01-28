@@ -3,24 +3,29 @@ import { api } from '../services/api';
 import PostCard from './PostCard';
 import './Feed.css';
 
-const PER_PAGE = 15;
+const PER_PAGE = 2;
+const DEFAULT_AVATAR = '/assets/avatar_default.png';
 
 export default function Feed({
-  onPostUpdate,
+  posts: postsProp,
+  defaultAvatar = DEFAULT_AVATAR,
+  onOpenCreate,
+  onExpand,
+  onEdit,
+  onDelete, // callback opcional (ex.: analytics). A remoção local é sempre feita aqui.
   prependPost,
   onPrependConsumed,
   updatedPost,
   onUpdatedConsumed,
   optimisticPost,
-  onClearOptimistic,
   optimisticUpdatedPost,
   revertPost,
   onRevertConsumed,
 }) {
-  const [posts, setPosts] = useState([]);
+  const [posts, setPosts] = useState(postsProp ?? []);
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!postsProp?.length);
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef(null);
   const observerRef = useRef(null);
@@ -37,10 +42,17 @@ export default function Feed({
       } else {
         setPosts(items);
       }
-      const total = res?.meta?.total ?? res?.total ?? 0;
-      const current = res?.meta?.current_page ?? pageNum;
-      const last = res?.meta?.last_page ?? (Math.ceil(total / PER_PAGE) || 1);
-      setHasMore(current < last);
+      // Suporta 2 formatos:
+      // - Backend com paginação completa: { data: [], meta: { current_page, last_page, ... } }
+      // - Backend retornando apenas array (sem meta): []
+      const lastPage = res?.meta?.last_page ?? null;
+      const currentPage = res?.meta?.current_page ?? pageNum;
+      if (typeof lastPage === 'number') {
+        setHasMore(currentPage < lastPage);
+      } else {
+        // Sem meta: considera que há mais se veio "cheio" (>= PER_PAGE)
+        setHasMore(items.length >= PER_PAGE);
+      }
     } catch (e) {
       setHasMore(false);
     } finally {
@@ -50,8 +62,14 @@ export default function Feed({
   }, []);
 
   useEffect(() => {
+    if (postsProp !== undefined && Array.isArray(postsProp)) {
+      setPosts(postsProp);
+      setLoading(false);
+      setHasMore(false);
+      return;
+    }
     loadPage(1, false);
-  }, [loadPage]);
+  }, [loadPage, postsProp]);
 
   useEffect(() => {
     if (!sentinelRef.current || !hasMore || loading || loadingMore) return;
@@ -76,7 +94,9 @@ export default function Feed({
   useEffect(() => {
     if (!prependPost) return;
     setPosts((prev) => {
-      const exists = prev.some((p) => p.id === prependPost.id || String(p.id) === String(prependPost.id));
+      const exists = prev.some(
+        (p) => p.id === prependPost.id || String(p.id) === String(prependPost.id)
+      );
       if (exists) return prev;
       return [prependPost, ...prev];
     });
@@ -99,6 +119,23 @@ export default function Feed({
     onRevertConsumed?.();
   }, [revertPost, onRevertConsumed]);
 
+  const handleDeletePost = (postId) => {
+    setPosts((prev) => prev.filter((p) => {
+      const pid = String(p.id);
+      const targetId = String(postId);
+      return pid !== targetId;
+    }));
+  };
+
+  const handleDeleteAndNotify = (postId) => {
+    // 1) remove instantaneamente do feed
+    handleDeletePost(postId);
+    // 2) notifica o pai (se quiser)
+    if (typeof onDelete === 'function') {
+      onDelete(postId);
+    }
+  };
+
   const displayPosts = [...posts];
   if (optimisticPost) {
     const hasOptimistic = displayPosts.some(
@@ -116,6 +153,18 @@ export default function Feed({
 
   return (
     <div className="feed">
+      {typeof onOpenCreate === 'function' && (
+        <div className="feed-actions">
+          <button
+            type="button"
+            className="feed-btn-create"
+            onClick={onOpenCreate}
+          >
+            Criar Post
+          </button>
+        </div>
+      )}
+
       {loading && merged.length === 0 ? (
         <p className="feed-loading">Carregando...</p>
       ) : (
@@ -123,7 +172,13 @@ export default function Feed({
           <ul className="feed-list">
             {merged.map((post) => (
               <li key={post.id}>
-                <PostCard post={post} onEdit={onPostUpdate} />
+                <PostCard
+                  post={post}
+                  defaultAvatar={defaultAvatar}
+                  onExpand={onExpand}
+                  onEdit={onEdit}
+                  onDelete={handleDeleteAndNotify}
+                />
               </li>
             ))}
           </ul>
@@ -131,7 +186,14 @@ export default function Feed({
             <p className="feed-optimistic-hint">Publicando...</p>
           )}
           <div ref={sentinelRef} className="feed-sentinel" aria-hidden />
-          {loadingMore && <p className="feed-loading-more">Carregando mais...</p>}
+          {loadingMore && (
+            <p className="feed-loading-more">Carregando mais...</p>
+          )}
+          {!hasMore && merged.length > 0 && (
+            <p className="feed-end">
+              Não existem mais itens a serem exibidos.
+            </p>
+          )}
         </>
       )}
     </div>

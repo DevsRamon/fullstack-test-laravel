@@ -1,5 +1,31 @@
 .feed {
   width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 0 16px 24px;
+  background: var(--color-bg);
+}
+
+.feed-actions {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 24px;
+}
+
+.feed-btn-create {
+  padding: 10px 24px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--color-primary);
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
+.feed-btn-create:hover {
+  filter: brightness(1.05);
 }
 
 .feed-list {
@@ -21,8 +47,21 @@
   margin: 16px 0;
 }
 
+.feed-end {
+  text-align: center;
+  color: var(--color-muted);
+  font-size: 14px;
+  margin: 24px 0 16px;
+}
+
 .feed-sentinel {
   height: 1px;
   visibility: hidden;
   pointer-events: none;
+}
+
+@media (max-width: 768px) {
+  .feed {
+    padding: 0 12px 20px;
+  }
 }

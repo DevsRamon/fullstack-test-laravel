@@ -13,24 +13,37 @@ function App() {
   const [optimisticUpdatedPost, setOptimisticUpdatedPost] = useState(null);
   const [revertPost, setRevertPost] = useState(null);
 
+  const handleExpand = (post) => {
+    // Exemplo: pode abrir detalhe, scroll ou analytics
+    if (post?.id) {
+      console.log('Expandir post:', post.id);
+    }
+  };
+
   const handleSubmitPost = async (postData) => {
     const isEdit = postData.id && !String(postData.id).startsWith('temp-');
     if (isEdit) {
       const originalPost = editingPost;
       handleCloseModal();
-      setOptimisticUpdatedPost({
+      // Mantém a imagem atual no estado otimista quando o usuário não escolhe uma nova.
+      // Isso evita “piscar” (sumir e voltar) enquanto o PUT está em andamento.
+      const optimistic = {
         ...postData,
         id: originalPost.id,
         created_at: originalPost.created_at,
         updated_at: new Date().toISOString(),
-      });
+        imagem: postData.imagem !== undefined ? postData.imagem : originalPost.imagem,
+      };
+      setOptimisticUpdatedPost(optimistic);
       try {
-        const res = await api.updatePost(postData.id, {
+        // Só envia "imagem" se o usuário selecionou uma nova.
+        const updatePayload = {
           autor: postData.autor,
           categoria: postData.categoria,
           publicacao: postData.publicacao,
-          imagem: postData.imagem,
-        });
+          ...(postData.imagem !== undefined ? { imagem: postData.imagem } : {}),
+        };
+        const res = await api.updatePost(postData.id, updatePayload);
         const post = res?.data ?? res;
         if (post) setUpdatedPost(post);
       } catch (e) {
@@ -69,33 +82,26 @@ function App() {
 
   return (
     <div className="app-container">
-      <header className="app-header">
-        <div className="app-header-inner">
-          <button
-            className="btn-create-post"
-            onClick={handleOpenCreate}
-            type="button"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" className="btn-icon">
-              <line x1="4" y1="6" x2="4" y2="18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              <line x1="8" y1="6" x2="20" y2="6" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              <line x1="8" y1="12" x2="20" y2="12" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-              <line x1="8" y1="18" x2="20" y2="18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
-            </svg>
-            <span>Criar Post</span>
-          </button>
-        </div>
-      </header>
       <main className="app-main">
         <div className="feed-wrapper">
-          <Feed 
-            onPostUpdate={(post) => { setEditingPost(post); setIsModalOpen(true); }}
+          <Feed
+            onOpenCreate={handleOpenCreate}
+            onExpand={handleExpand}
+            onEdit={(post) => {
+              setEditingPost(post);
+              setIsModalOpen(true);
+            }}
             prependPost={prependPost}
-            onPrependConsumed={() => { setPrependPost(null); setOptimisticPost(null); }}
+            onPrependConsumed={() => {
+              setPrependPost(null);
+              setOptimisticPost(null);
+            }}
             updatedPost={updatedPost}
-            onUpdatedConsumed={() => { setUpdatedPost(null); setOptimisticUpdatedPost(null); }}
+            onUpdatedConsumed={() => {
+              setUpdatedPost(null);
+              setOptimisticUpdatedPost(null);
+            }}
             optimisticPost={optimisticPost}
-            onClearOptimistic={() => setOptimisticPost(null)}
             optimisticUpdatedPost={optimisticUpdatedPost}
             revertPost={revertPost}
             onRevertConsumed={() => setRevertPost(null)}
