@@ -9,134 +9,226 @@ use App\Models\Imagem;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Validation\Rule;
-use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Validation\ValidationException;
 
 class PostController extends Controller
 {
-    public function index(Request $request)
+    private const IMAGE_MAX_SIZE_MB = 10;
+    private const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png'];
+
+    /**
+     * Valida imagem base64 e retorna dados binários. Aceita apenas JPG ou PNG.
+     *
+     * @param string $imagemBase64
+     * @return array{data: string, mime: string}
+     * @throws \Exception
+     */
+    private function validateAndDecodeImage(string $imagemBase64): array
     {
-        $perPage = (int) $request->integer('per_page', 15);
-        $perPage = max(5, min(50, $perPage));
+        $prefixMatch = [];
+        if (preg_match('/^data:image\/(jpeg|jpg|png);base64,/i', $imagemBase64, $prefixMatch)) {
+            $ext = strtolower($prefixMatch[1]);
+            $mime = $ext === 'jpg' ? 'image/jpeg' : 'image/' . $ext;
+            $imagemBase64 = preg_replace('/^data:image\/\w+;base64,/', '', $imagemBase64);
+        } else {
+            $mime = null;
+            if (preg_match('/^data:image\/\w+;base64,/', $imagemBase64)) {
+                throw new \Exception('Apenas formatos JPG ou PNG são permitidos.');
+            }
+            $imagemBase64 = preg_replace('/^data:image\/\w+;base64,/', '', $imagemBase64);
+        }
 
-        $posts = Post::query()
-            ->with('imagens')
-            ->latest()
-            ->paginate($perPage);
+        $imagemData = base64_decode($imagemBase64, true);
+        if ($imagemData === false) {
+            throw new \Exception('A imagem deve ser enviada em formato base64 (JPG ou PNG).');
+        }
 
-        return PostResource::collection($posts);
+        $size = strlen($imagemData);
+        if ($size > self::IMAGE_MAX_SIZE_MB * 1024 * 1024) {
+            throw new \Exception('Imagem muito grande. Tamanho máximo: ' . self::IMAGE_MAX_SIZE_MB . 'MB.');
+        }
+
+        $detectedMime = $this->getImageMimeFromBytes($imagemData);
+        if ($detectedMime === null || !in_array($detectedMime, self::ALLOWED_IMAGE_TYPES, true)) {
+            throw new \Exception('Apenas formatos JPG ou PNG são permitidos.');
+        }
+
+        return ['data' => $imagemData, 'mime' => $detectedMime];
     }
 
+    /**
+     * Detecta MIME da imagem pelos magic bytes (JPEG ou PNG).
+     */
+    private function getImageMimeFromBytes(string $data): ?string
+    {
+        if (strlen($data) < 8) {
+            return null;
+        }
+        $head = substr($data, 0, 8);
+        if (substr($head, 0, 3) === "\xFF\xD8\xFF") {
+            return 'image/jpeg';
+        }
+        if (substr($head, 0, 8) === "\x89PNG\r\n\x1A\n") {
+            return 'image/png';
+        }
+        return null;
+    }
+
+    /**
+     * Display a listing of the resource.
+     *
+     * @return \Illuminate\Http\JsonResponse
+     */
+    public function index(Request $request): JsonResponse
+    {
+        $perPage = (int) $request->input('per_page', 15);
+        $perPage = max(5, min(50, $perPage ?: 15));
+
+        $posts = Post::with('imagem')
+            ->orderBy('created_at', 'desc')
+            ->paginate($perPage);
+
+        return response()->json(PostResource::collection($posts), 200);
+    }
+
+    /**
+     * Store a newly created resource in storage.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function store(Request $request): JsonResponse
     {
-        $validated = $this->validatePost($request, false);
+        $validated = $request->validate([
+            'autor' => 'required|string|max:60',
+            'categoria' => ['required', Rule::in(['post', 'artigo', 'grupo'])],
+            'publicacao' => 'required|string',
+            'imagem' => 'nullable|string', // Base64 obrigatório: string base64 ou data URL (data:image/jpeg;base64,...). Apenas JPG ou PNG.
+        ]);
+
+        DB::beginTransaction();
 
         try {
-            $post = DB::transaction(function () use ($request, $validated) {
-                $post = Post::create(
-                    Arr::only($validated, ['autor', 'categoria', 'publicacao'])
-                );
+            // Criar o post
+            $post = Post::create([
+                'autor' => $validated['autor'],
+                'categoria' => $validated['categoria'],
+                'publicacao' => $validated['publicacao'],
+            ]);
 
-                if ($request->filled('imagem')) {
-                    $bytes = $this->decodeBase64Image($validated['imagem']);
-                    $post->imagens()->create(['imagem' => $bytes]);
-                }
+            // Se houver imagem em base64, processar e salvar (apenas JPG ou PNG)
+            if ($request->has('imagem') && !empty($validated['imagem'])) {
+                $decoded = $this->validateAndDecodeImage($validated['imagem']);
+                $imagem = Imagem::create([
+                    'imagem' => $decoded['data'],
+                ]);
+                $post->imagem_id = $imagem->id;
+                $post->save();
+            }
 
-                return $post;
-            });
+            DB::commit();
 
-            $post->load('imagens');
+            // Carregar o post com a imagem
+            $post->load('imagem');
 
             return response()->json(new PostResource($post), 201);
-        } catch (ValidationException $e) {
-            throw $e;
-        } catch (\Throwable $e) {
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            $isValidationError = str_contains($e->getMessage(), 'base64')
+                || str_contains($e->getMessage(), 'JPG ou PNG')
+                || str_contains($e->getMessage(), 'muito grande');
+            $status = $isValidationError ? 422 : 500;
+
             return response()->json([
-                'error' => 'Erro ao criar post',
-            ], 500);
+                'error' => 'Erro ao criar post: ' . $e->getMessage()
+            ], $status);
         }
     }
 
+    /**
+     * Display the specified resource.
+     *
+     * @param  \App\Models\Post  $post
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function show(Post $post): JsonResponse
     {
-        $post->load('imagens');
+        $post->load('imagem');
 
         return response()->json(new PostResource($post), 200);
     }
 
+    /**
+     * Update the specified resource in storage.
+     *
+     * @param  \Illuminate\Http\Request  $request
+     * @param  \App\Models\Post  $post
+     * @return \Illuminate\Http\JsonResponse
+     */
     public function update(Request $request, Post $post): JsonResponse
     {
-        $validated = $this->validatePost($request, true);
+        $validated = $request->validate([
+            'autor' => 'sometimes|string|max:60',
+            'categoria' => ['sometimes', Rule::in(['post', 'artigo', 'grupo'])],
+            'publicacao' => 'sometimes|string',
+            'imagem' => 'nullable|string', // Base64 obrigatório: string base64 ou data URL (data:image/jpeg;base64,...). Apenas JPG ou PNG.
+        ]);
+
+        DB::beginTransaction();
 
         try {
-            DB::transaction(function () use ($request, $validated, $post) {
-                $fields = Arr::only($validated, ['autor', 'categoria', 'publicacao']);
+            // Atualizar campos do post
+            $postData = array_filter([
+                'autor' => $validated['autor'] ?? null,
+                'categoria' => $validated['categoria'] ?? null,
+                'publicacao' => $validated['publicacao'] ?? null,
+            ], fn($value) => $value !== null);
 
-                if (!empty($fields)) {
-                    $post->fill($fields)->save();
+            if (!empty($postData)) {
+                $post->update($postData);
+            }
+
+            // Se houver nova imagem, atualizar ou criar (apenas JPG ou PNG)
+            if ($request->has('imagem') && !empty($validated['imagem'])) {
+                $decoded = $this->validateAndDecodeImage($validated['imagem']);
+                // remove imagem antiga para não ficar órfã
+                if ($post->imagem) {
+                    $post->imagem->delete();
                 }
+                $imagem = Imagem::create([
+                    'imagem' => $decoded['data'],
+                ]);
+                $post->imagem_id = $imagem->id;
+                $post->save();
+            }
 
-                if ($request->filled('imagem')) {
-                    $bytes = $this->decodeBase64Image($validated['imagem']);
-
-                    $post->imagens()->delete();
-                    $post->imagens()->create(['imagem' => $bytes]);
-                }
-            });
-
-            $post->load('imagens');
+            DB::commit();
+            $post->load('imagem');
 
             return response()->json(new PostResource($post), 200);
-        } catch (ValidationException $e) {
-            throw $e;
-        } catch (\Throwable $e) {
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            $isValidationError = str_contains($e->getMessage(), 'base64')
+                || str_contains($e->getMessage(), 'JPG ou PNG')
+                || str_contains($e->getMessage(), 'muito grande');
+            $status = $isValidationError ? 422 : 500;
+
             return response()->json([
-                'error' => 'Erro ao atualizar post',
-            ], 500);
+                'error' => 'Erro ao atualizar post: ' . $e->getMessage()
+            ], $status);
         }
     }
 
     public function destroy(Post $post): JsonResponse
     {
-        DB::transaction(function () use ($post) {
-            $post->imagens()->delete();
-            $post->delete();
-        });
+        // remove imagem associada para não ficar órfã
+        if ($post->imagem) {
+            $post->imagem->delete();
+        }
+        $post->delete();
 
         return response()->json(null, 204);
-    }
-
-    private function validatePost(Request $request, bool $isUpdate): array
-    {
-        return $request->validate([
-            'autor' => [$isUpdate ? 'sometimes' : 'required', 'string', 'max:60'],
-            'categoria' => [$isUpdate ? 'sometimes' : 'required', Rule::in(['post', 'artigo', 'grupo'])],
-            'publicacao' => [$isUpdate ? 'sometimes' : 'required', 'string'],
-            'imagem' => ['nullable', 'string'],
-        ]);
-    }
-
-    private function decodeBase64Image(string $value): string
-    {
-        if (str_starts_with($value, 'data:image/')) {
-            $value = preg_replace('/^data:image\/\w+;base64,/', '', $value);
-        }
-
-        $bytes = base64_decode($value, true);
-
-        if ($bytes === false) {
-            throw ValidationException::withMessages([
-                'imagem' => ['Imagem em base64 inválida.'],
-            ]);
-        }
-
-        if (strlen($bytes) > 10 * 1024 * 1024) {
-            throw ValidationException::withMessages([
-                'imagem' => ['Imagem muito grande. Tamanho máximo: 10MB.'],
-            ]);
-        }
-
-        return $bytes;
     }
 }

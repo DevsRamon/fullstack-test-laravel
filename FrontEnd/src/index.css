@@ -14,7 +14,7 @@
 
   --max-width: 720px;
 
-  font-family: 'Lato', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: Lato, 'Source Sans Pro', sans-serif;
   font-size: 16px;
   line-height: 1.5;
   color: var(--color-text);
@@ -36,11 +36,3 @@ body {
   color: var(--color-text);
 }
 
-button {
-  border-radius: var(--radius-md);
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font: 500 1em inherit;
-  background: #1a1a1a;
-  cursor: pointer;
-}
